@@ -258,6 +258,99 @@ app.post('/api/chat', async (req, res) => {
   }
 });
 
+app.post('/api/propose', async (req, res) => {
+  const { message, timezone, imageBase64, instructions } = req.body;
+
+  if (!timezone) {
+    return res.status(400).json({ error: "Timezone is required" });
+  }
+
+  try {
+    const userMessage = instructions || message || "Extract these events for my calendar.";
+    const includeImage = !!imageBase64;
+
+    const content = await callAI(userMessage, timezone, includeImage, imageBase64);
+    
+    let aiResponse;
+    try {
+      aiResponse = JSON.parse(content);
+    } catch (e) {
+      console.error("Failed to parse AI response:", content);
+      return res.status(500).json({ error: "AI returned invalid JSON", details: content });
+    }
+
+    const actions = aiResponse.actions || [];
+    
+    // Return actions without executing them
+    res.json({ success: true, actions });
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/create-event', async (req, res) => {
+  const { calendarId, action, params } = req.body;
+
+  if (!APPS_SCRIPT_URL || APPS_SCRIPT_URL.trim() === '') {
+    return res.status(500).json({ 
+      error: "APPS_SCRIPT_URL is not configured in .env",
+      details: "Please set APPS_SCRIPT_URL in your .env file with your Google Apps Script Web App URL"
+    });
+  }
+
+  // Validate URL format
+  try {
+    new URL(APPS_SCRIPT_URL);
+  } catch (e) {
+    return res.status(500).json({ 
+      error: "APPS_SCRIPT_URL is not a valid URL",
+      details: `Current value: ${APPS_SCRIPT_URL}. Please check your .env file.`
+    });
+  }
+
+  if (!calendarId) {
+    return res.status(400).json({ error: "Calendar ID is required" });
+  }
+
+  try {
+    const payload = {
+      calendarId: calendarId,
+      action: action,
+      params: params
+    };
+
+    console.log(`Creating event via Apps Script:`, JSON.stringify(payload, null, 2));
+    console.log(`Apps Script URL: ${APPS_SCRIPT_URL}`);
+
+    const response = await axios.post(APPS_SCRIPT_URL, payload);
+
+    if (typeof response.data === 'string' && response.data.includes('<!DOCTYPE html>')) {
+      console.error("Received HTML from Apps Script.");
+      return res.status(500).json({ error: 'Received HTML instead of JSON. Check Apps Script deployment permissions.' });
+    }
+
+    res.json({ success: true, result: response.data });
+
+  } catch (error) {
+    console.error("Error calling Apps Script:", error.message);
+    console.error("Full error:", error);
+    
+    let errorMessage = error.message;
+    if (error.code === 'ERR_INVALID_URL') {
+      errorMessage = `Invalid Apps Script URL: ${APPS_SCRIPT_URL}. Please check your .env file.`;
+    } else if (error.response) {
+      errorMessage = `Apps Script returned error: ${error.response.status} - ${error.response.statusText}`;
+    }
+    
+    res.status(500).json({ 
+      error: errorMessage,
+      details: error.code === 'ERR_INVALID_URL' ? 'Make sure APPS_SCRIPT_URL in .env is a valid URL starting with https://' : undefined
+    });
+  }
+});
+
 app.post('/api/upload', async (req, res) => {
   const { imageBase64, calendarId, timezone, instructions } = req.body;
 
